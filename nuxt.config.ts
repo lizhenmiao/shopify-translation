@@ -2,5 +2,28 @@
 export default defineNuxtConfig({
   compatibilityDate: '2025-05-15',
   devtools: { enabled: true },
-  modules: ['@nuxt/eslint']
+  modules: ['@nuxt/eslint'],
+  runtimeConfig: {
+    // mysql 配置
+    mysql: {
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT,
+      database: process.env.DB_NAME,
+      username: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+    },
+    // shopify 配置
+    shopify: {
+      shop: process.env.SHOPIFY_SHOP,
+      apiKey: process.env.SHOPIFY_API_KEY,
+      apiSecretKey: process.env.SHOPIFY_API_SECRET_KEY,
+      host: process.env.SHOPIFY_HOST,
+      version: process.env.SHOPIFY_API_VERSION,
+      accessToken: process.env.SHOPIFY_ACCESS_TOKEN,
+    },
+    // 客户端可用环境变量
+    public: {
+      apiBaseUrl: '/api',
+    }
+  }
 })
