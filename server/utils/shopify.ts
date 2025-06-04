@@ -2,8 +2,43 @@ import { shopifyApi, ApiVersion, Session, GraphqlClient, LogSeverity } from '@sh
 import Logger from '~/server/utils/logger';
 
 // Shopify API 单例
-let shopifyApiInstance: any = null;
+let shopifyApiInstance: ReturnType<typeof shopifyApi> | null = null;
 let shopifySessionInstance: Session | null = null;
+
+// 缓存配置
+let configCache: {
+  apiKey: string;
+  apiSecretKey: string;
+  host: string;
+  version: ApiVersion;
+  shop: string;
+  accessToken: string;
+} | null = null;
+
+/**
+ * 获取runtime配置
+ */
+const getRuntimeConfig = () => {
+  // 如果已缓存，直接返回
+  if (configCache) {
+    return configCache;
+  }
+
+  const { shopify } = useRuntimeConfig();
+  const { apiKey, apiSecretKey, host, version, shop, accessToken } = shopify;
+
+  // 缓存配置
+  configCache = {
+    apiKey: apiKey as string,
+    apiSecretKey: apiSecretKey as string,
+    host: host as string,
+    version: version as ApiVersion || ApiVersion.January25,
+    shop: shop as string,
+    accessToken: accessToken as string,
+  };
+
+  return configCache;
+};
 
 // 初始化Shopify API - 使用单例模式避免重复初始化
 const initShopifyApi = () => {
@@ -12,22 +47,27 @@ const initShopifyApi = () => {
     return shopifyApiInstance;
   }
 
-  const { shopify } = useRuntimeConfig();
-  const { apiKey, apiSecretKey, host, version } = shopify;
+  const config = getRuntimeConfig();
 
   try {
+    // 生产环境下减少日志输出级别，提升性能
+    const logLevel = process.env.NODE_ENV === 'production'
+      ? LogSeverity.Warning
+      : LogSeverity.Debug;
+
     // 初始化 API 并缓存实例
     shopifyApiInstance = shopifyApi({
-      apiKey: apiKey as string,
-      apiSecretKey: apiSecretKey as string,
+      apiKey: config.apiKey,
+      apiSecretKey: config.apiSecretKey,
       scopes: ['read_translations', 'write_translations'],
-      hostName: (host as string || 'localhost').replace(/https?:\/\//, ''),
-      apiVersion: version as ApiVersion || ApiVersion.January25,
+      hostName: (config.host || 'localhost').replace(/https?:\/\//, ''),
+      apiVersion: config.version,
       isEmbeddedApp: false,
       logger: {
-        level: LogSeverity.Debug,
+        level: logLevel,
         timestamps: true,
-        httpRequests: true
+        // 只在开发环境下记录HTTP请求
+        httpRequests: process.env.NODE_ENV !== 'production'
       },
     });
 
@@ -36,7 +76,6 @@ const initShopifyApi = () => {
     return shopifyApiInstance;
   } catch (error: any) {
     Logger.error(`初始化Shopify API失败: ${error.message || '未知错误'}`);
-
     throw error;
   }
 };
@@ -48,41 +87,49 @@ const createShopifySession = () => {
     return shopifySessionInstance;
   }
 
-  const { shopify } = useRuntimeConfig();
-  const { shop, accessToken } = shopify;
+  const config = getRuntimeConfig();
 
   try {
     // 创建会话对象并缓存
     shopifySessionInstance = new Session({
-      id: 'offline_' + shop as string,
-      shop: shop as string,
+      id: 'offline_' + config.shop,
+      shop: config.shop,
       state: '',
       isOnline: false
     });
 
     // 设置访问令牌
-    shopifySessionInstance.accessToken = accessToken as string;
+    shopifySessionInstance.accessToken = config.accessToken;
 
     Logger.info('[Shopify Session] 创建完成');
     return shopifySessionInstance;
   } catch (error: any) {
     Logger.error(`创建Shopify会话失败: ${error.message || '未知错误'}`);
-
     throw error;
   }
 };
+
+// 缓存GraphQL客户端实例
+let graphqlClientInstance: GraphqlClient | null = null;
 
 /**
  * 创建Shopify GraphQL客户端
  * @returns GraphQL客户端实例
  */
 const createShopifyGraphQLClient = (): GraphqlClient => {
+  // 如果已经创建过客户端，直接返回缓存的客户端
+  if (graphqlClientInstance) {
+    return graphqlClientInstance;
+  }
+
   const shopify = initShopifyApi();
   const session = createShopifySession();
 
-  return new shopify.clients.Graphql({
+  graphqlClientInstance = new shopify.clients.Graphql({
     session,
   }) as GraphqlClient;
+
+  return graphqlClientInstance;
 };
 
 /**
@@ -99,7 +146,10 @@ export const executeGraphQLQuery = async <T = any>(query: string, variables: Rec
       variables: variables
     });
 
-    Logger.info(`[Shopify GraphQL] 执行查询完成，查询消耗信息: ${JSON.stringify(response?.extensions?.cost || {})}`);
+    // 只在非生产环境下输出详细日志
+    if (process.env.NODE_ENV !== 'production') {
+      Logger.info(`[Shopify GraphQL] 执行查询完成，查询消耗信息: ${JSON.stringify(response?.extensions?.cost || {})}`);
+    }
 
     // 确保返回response.data，这是Shopify API的标准响应格式
     return response.data as T;

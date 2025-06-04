@@ -1,3 +1,5 @@
+import Logger from "~/server/utils/logger"
+
 export const getSystemPrompt = (locale: string): string => {
   const systemPrompt: Record<string, string> = {
     en: `You are a professional translator specializing in HTML and Liquid syntax. Follow all formatting guidelines in the user prompt precisely, including preserving HTML tags, Liquid tags, placeholders, and special markers. Ensure your translation maintains the original text's tone, context, and formatting while adapting naturally to the target language.`,
@@ -8,6 +10,17 @@ export const getSystemPrompt = (locale: string): string => {
   return systemPrompt[locale] || systemPrompt['en'];
 };
 
+/**
+ * 封装一个等待函数
+ * @param ms 等待时间
+ * @returns Promise
+ */
+export const wait = (ms: number) => {
+  Logger.info(`等待 ${ms} ms 再继续...`);
+  return new Promise(resolve => setTimeout(resolve, ms));
+};
+
 export default {
-  getSystemPrompt
+  getSystemPrompt,
+  wait
 };

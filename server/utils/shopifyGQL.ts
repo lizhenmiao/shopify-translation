@@ -2,6 +2,7 @@ import Logger from '~/server/utils/logger';
 import { executeGraphQLQuery } from '~/server/utils/shopify';
 import { Resource, ResourceItem } from '~/server/models';
 import { Op } from 'sequelize';
+import { wait } from '~/server/utils';
 
 // 支持的语言列表
 let supportedLocales: any[] = [];
@@ -178,6 +179,8 @@ export const getTranslatableResources = async (resourceType: string) => {
         throw new Error('主语言 locale 为空');
       }
 
+      Logger.info(`[${resourceType}] 开始标记 ${primaryLocale} 语言的 ${resourceType} 资源为 -1`);
+
       // 标记当前 resourceType && primaryLocale 的记录为 -1
       await ResourceItem.update(
         {
@@ -193,6 +196,8 @@ export const getTranslatableResources = async (resourceType: string) => {
           }
         }
       );
+
+      Logger.info(`[${resourceType}] 标记 ${primaryLocale} 语言的 ${resourceType} 资源为 -1 完成`);
 
       // 开始将数据同步到数据库
       const resourceUpserts = [];
@@ -251,6 +256,25 @@ export const getTranslatableResources = async (resourceType: string) => {
 }
 
 /**
+ * 确定资源的同步状态
+ * @param oldSyncStatus 旧的同步状态
+ * @param translation 翻译数据
+ * @returns 新的同步状态
+ */
+function determineSyncStatus(oldSyncStatus: number | null, translation: any): number {
+  if (oldSyncStatus === 1) {
+    // 已翻译但未同步到Shopify
+    return translation?.outdated ? 2 : 1;
+  } else if (oldSyncStatus === 4) {
+    // 已删除翻译，保持状态不变
+    return 4;
+  } else {
+    // 其他状态根据翻译情况决定
+    return translation ? (translation.outdated ? 2 : 3) : 0;
+  }
+}
+
+/**
  * 获取指定资源ID的翻译资源
  * @param resourceType 资源类型
  * @param resourceIds 资源ID列表
@@ -304,7 +328,7 @@ export const getTranslatableResourcesByIds = async (resourceType: string, resour
     };
 
     // 批次索引
-    let batchIndex = 0;
+    let batchIndex = 1;
 
     for (const resourceIdsBatch of resourceIdsBatches) {
       const variables = {
@@ -350,6 +374,52 @@ export const getTranslatableResourcesByIds = async (resourceType: string, resour
           }
         );
 
+        // 收集所有需要查询的资源项
+        const resourceItemKeys = new Set<string>();
+
+        // 预处理数据
+        for (const edge of result) {
+          const { resourceId, translatableContent, translations } = edge.node || {};
+          if (!resourceId) continue;
+
+          // 收集 translatableContent 相关的键
+          if (translatableContent && translatableContent.length > 0) {
+            for (const content of translatableContent) {
+              resourceItemKeys.add(`${resourceId}:${content.key}:${locale}`);
+            }
+          }
+
+          // 收集 translations 相关的键
+          if (translations && translations.length > 0) {
+            for (const translation of translations) {
+              resourceItemKeys.add(`${resourceId}:${translation.key}:${locale}`);
+            }
+          }
+        }
+
+        // 批量查询数据库
+        const resourceItemsWhere = Array.from(resourceItemKeys).map(key => {
+          const [resourceId, itemKey, itemLocale] = key.split(':');
+          return {
+            resourceId,
+            key: itemKey,
+            locale: itemLocale
+          };
+        });
+
+        const resourceItems = await ResourceItem.findAll({
+          where: {
+            [Op.or]: resourceItemsWhere
+          }
+        });
+
+        // 创建查询结果Map，方便快速访问
+        const resourceItemsMap = new Map<string, any>();
+        resourceItems.forEach(item => {
+          const key = `${item.resourceId}:${item.key}:${item.locale}`;
+          resourceItemsMap.set(key, item);
+        });
+
         // 开始将数据同步到数据库
         const resourceUpserts = [];
         const resourceItemUpserts = [];
@@ -368,37 +438,25 @@ export const getTranslatableResourcesByIds = async (resourceType: string, resour
             updatedAt: new Date()
           });
 
+          // 创建翻译映射表，方便快速查找
+          const translationsMap = new Map<string, any>();
+          if (translations && translations.length > 0) {
+            translations.forEach(translation => {
+              translationsMap.set(translation.key, translation);
+            });
+          }
+
           for (const content of translatableContent) {
             const { key, digest } = content;
-            const translation = (translations || []).find((translation: any) => translation.key === key);
+            const translation = translationsMap.get(key);
 
-            // 需要先判断当前的 resourceItem 表中是否存在该资源 ID 和key的记录
-            const resourceItem = await ResourceItem.findOne({
-              where: {
-                resourceId,
-                key,
-                locale
-              }
-            });
-
-            // 如果存在, 获取其 syncStatus 值
+            // 使用Map快速获取资源项
+            const lookupKey = `${resourceId}:${key}:${locale}`;
+            const resourceItem = resourceItemsMap.get(lookupKey);
             const oldSyncStatus = resourceItem?.syncStatus || null;
 
-            // 默认为需要翻译
-            let syncStatus = 0;
-
-            if (oldSyncStatus === 1) {
-              // 如果 oldSyncStatus 值为 1, 则表示该资源已翻译但还未同步到Shopify, 判断 translation 的 outdated 值, 如果 outdated 为 true, 则表示该资源已过期, 更新 syncStatus 值为 2, 否则不更新 syncStatus 值
-              syncStatus = translation?.outdated ? 2 : 1;
-            } else if (oldSyncStatus === 4) {
-              // 如果 oldSyncStatus 值为 4, 则表示该资源已删除翻译, 不进行更新 syncStatus 值
-              syncStatus = 4;
-            } else {
-              // 判断 translation 是否存在, 如果存在, 则判断 translation 的 outdated 值, 如果 outdated 为 true, 则表示该资源已过期, 更新 syncStatus 值为 2, 如果 outdated 为 false, 则表示该资源已翻译且未过期, 更新 syncStatus 值为 3
-              // 如果 translation 不存在, 则表示该资源未翻译, 更新 syncStatus 值为 0
-              syncStatus = translation ? (translation.outdated ? 2 : 3) : 0;
-            }
-
+            // 使用优化后的函数确定同步状态
+            const syncStatus = determineSyncStatus(oldSyncStatus, translation);
 
             resourceItemUpserts.push({
               resourceId,
@@ -414,52 +472,38 @@ export const getTranslatableResourcesByIds = async (resourceType: string, resour
           }
 
           // 将 translations 中在 translatableContent 中不存在的记录进行更新
-          for (const translation of (translations || [])) {
-            const { key, value, outdated, updatedAt } = translation;
+          if (translations && translations.length > 0) {
+            // 创建 translatableContent 键的集合，用于快速查找
+            const contentKeys = new Set(translatableContent.map(content => content.key));
 
-            const translatableContentItem = translatableContent.find((content: any) => content.key === key);
+            for (const translation of translations) {
+              const { key, value, updatedAt } = translation;
 
-            if (translatableContentItem) {
-              continue;
-            }
+              // 如果在 translatableContent 中已存在，则跳过
+              if (contentKeys.has(key)) {
+                continue;
+              }
 
-            const resourceItem = await ResourceItem.findOne({
-              where: {
+              // 使用Map快速获取资源项
+              const lookupKey = `${resourceId}:${key}:${locale}`;
+              const resourceItem = resourceItemsMap.get(lookupKey);
+              const oldSyncStatus = resourceItem?.syncStatus || null;
+
+              // 使用优化后的函数确定同步状态
+              const syncStatus = determineSyncStatus(oldSyncStatus, translation);
+
+              resourceItemUpserts.push({
                 resourceId,
                 key,
-                locale
-              }
-            });
-
-            // 如果存在, 获取其 syncStatus 值
-            const oldSyncStatus = resourceItem?.syncStatus || null;
-
-            // 默认为需要翻译
-            let syncStatus = 0;
-
-            if (oldSyncStatus === 1) {
-              // 如果 oldSyncStatus 值为 1, 则表示该资源已翻译但还未同步到Shopify, 判断 translation 的 outdated 值, 如果 outdated 为 true, 则表示该资源已过期, 更新 syncStatus 值为 2, 否则不更新 syncStatus 值
-              syncStatus = translation?.outdated ? 2 : 1;
-            } else if (oldSyncStatus === 4) {
-              // 如果 oldSyncStatus 值为 4, 则表示该资源已删除翻译, 不进行更新 syncStatus 值
-              syncStatus = 4;
-            } else {
-              // 判断 translation 是否存在, 如果存在, 则判断 translation 的 outdated 值, 如果 outdated 为 true, 则表示该资源已过期, 更新 syncStatus 值为 2, 如果 outdated 为 false, 则表示该资源已翻译且未过期, 更新 syncStatus 值为 3
-              // 如果 translation 不存在, 则表示该资源未翻译, 更新 syncStatus 值为 0
-              syncStatus = translation ? (translation.outdated ? 2 : 3) : 0;
+                content: value,
+                digestHash: null,
+                locale,
+                syncStatus,
+                updatedAt: new Date(),
+                lastModified: new Date(),
+                lastSynced: updatedAt || new Date()
+              });
             }
-
-            resourceItemUpserts.push({
-              resourceId,
-              key,
-              content: value,
-              digestHash: null,
-              locale,
-              syncStatus,
-              updatedAt: new Date(),
-              lastModified: new Date(),
-              lastSynced: updatedAt || new Date()
-            });
           }
         }
 
@@ -539,9 +583,9 @@ export const fetchAllPages = async <T, R>(
 
     page++;
 
-    // 等待 1 秒再继续
-    Logger.info(`等待 1 秒再继续...`);
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    if (hasNextPage) {
+      await wait(1000);
+    }
   }
 
   return allEdges as T;
