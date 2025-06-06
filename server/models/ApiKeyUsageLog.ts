@@ -8,8 +8,12 @@ import Provider from '@/server/models/Provider';
 class ApiKeyUsageLog extends Model {
   declare id: number;
   declare providerId: number;
-  declare usedAt: Date;
+  declare model: string;
+  declare apiKey: string;
   declare tokensUsed: number;
+  declare inputTokens: number;
+  declare outputTokens: number;
+  declare estimatedInputTokens: number;
   declare requestType: string;
   declare status: string;
   declare errorMsg: string | null;
@@ -31,51 +35,84 @@ ApiKeyUsageLog.init({
   providerId: {
     type: DataTypes.INTEGER,
     allowNull: false,
-    references: { model: Provider, key: 'id' }
+    references: { model: Provider, key: 'id' },
+    comment: '提供商ID'
   },
-  usedAt: {
-    type: DataTypes.DATE,
+  model: {
+    type: DataTypes.STRING(100),
     allowNull: false,
-    defaultValue: DataTypes.NOW
+    comment: '模型'
+  },
+  apiKey: {
+    type: DataTypes.TEXT,
+    allowNull: false,
+    comment: 'API密钥'
   },
   tokensUsed: {
     type: DataTypes.INTEGER,
     allowNull: false,
-    defaultValue: 0
+    defaultValue: 0,
+    comment: '使用的 tokens 数量'
+  },
+  inputTokens: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+    comment: '使用的 input tokens 数量'
+  },
+  outputTokens: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+    comment: '使用的 output tokens 数量'
+  },
+  estimatedInputTokens: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+    comment: '预估的 input tokens 数量'
   },
   requestType: {
     type: DataTypes.STRING(50),
     allowNull: false,
-    defaultValue: 'translate'
+    defaultValue: 'translate',
+    comment: '请求类型'
   },
   status: {
     type: DataTypes.STRING(20),
     allowNull: false,
-    defaultValue: 'ok'
+    defaultValue: 'ok',
+    comment: '请求状态'
   },
   errorMsg: {
     type: DataTypes.TEXT,
-    allowNull: true
+    allowNull: true,
+    comment: '错误信息'
   },
   requestStartTime: {
     type: DataTypes.DATE,
     allowNull: true,
+    comment: '请求开始时间'
   },
   requestEndTime: {
     type: DataTypes.DATE,
     allowNull: true,
+    comment: '请求结束时间'
   },
   durationMs: {
     type: DataTypes.INTEGER,
     allowNull: true,
+    comment: '请求持续时间'
   },
   requestParams: {
     type: DataTypes.TEXT,
     allowNull: true,
+    comment: '请求参数'
   },
   responseData: {
     type: DataTypes.TEXT,
     allowNull: true,
+    comment: '响应数据'
   },
   createdAt: {
     type: DataTypes.DATE,

@@ -1,6 +1,6 @@
 import Logger from '~/server/utils/logger';
 import { getTranslatableResources, getSupportedResourceTypes, getSupportedLocales, getTranslatableResourcesByIds } from '~/server/utils/shopifyGQL';
-import { wait } from '~/server/utils';
+import { sleep } from '~/server/utils';
 
 // 定义任务接口
 interface SyncTask {
@@ -131,7 +131,7 @@ function startBackgroundProcessing(task: SyncTask): void {
               Logger.info(`${resourceType} 的 ${locale} 语言的翻译资源获取完成`);
 
               if (resourceType !== resourceTypes[resourceTypes.length - 1]) {
-                await wait(2000);
+                await sleep(2000);
               }
             }
           }
@@ -139,7 +139,7 @@ function startBackgroundProcessing(task: SyncTask): void {
           Logger.info(`${locale} 语言的翻译资源获取完成\n`);
 
           if (locale !== locales[locales.length - 1]) {
-            await wait(2000);
+            await sleep(2000);
           }
         }
       }

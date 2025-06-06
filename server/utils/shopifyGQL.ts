@@ -2,12 +2,13 @@ import Logger from '~/server/utils/logger';
 import { executeGraphQLQuery } from '~/server/utils/shopify';
 import { Resource, ResourceItem } from '~/server/models';
 import { Op } from 'sequelize';
-import { wait } from '~/server/utils';
+import { sleep } from '~/server/utils';
 
 // 支持的语言列表
 let supportedLocales: any[] = [];
 /**
  * 获取支持的语言
+ * https://shopify.dev/docs/api/admin-graphql/unstable/queries/shoplocales
  * @param forceRefresh 是否强制刷新
  * @returns 支持的语言列表
  */
@@ -42,9 +43,43 @@ export const getSupportedLocales = async (forceRefresh: boolean = false) => {
   }
 };
 
+// 商店所有语言列表
+let shopLocales: Map<string, any> = new Map();
+/**
+ * 获取商店所有语言列表
+ * @returns 商店所有语言列表
+ */
+export const getShopLocales = async (forceRefresh: boolean = false) => {
+  if (shopLocales.size > 0 && !forceRefresh) {
+    return shopLocales;
+  }
+
+  const query = `
+    query {
+      availableLocales {
+        isoCode
+        name
+      }
+    }
+  `;
+
+  try {
+    const response = await executeGraphQLQuery(query);
+    const availableLocales = response?.availableLocales || [];
+
+    for (const locale of availableLocales) {
+      shopLocales.set(locale.isoCode, locale.name);
+    }
+
+    return shopLocales;
+  } catch (error: any) {
+    throw error;
+  }
+}
+
 /**
  * 获取支持的资源类型
- * shopify api 文档：https://shopify.dev/docs/api/admin-graphql/latest/queries/translatableresources#argument-resourceType
+ * https://shopify.dev/docs/api/admin-graphql/latest/queries/translatableresources#argument-resourceType
  * @returns 支持的资源类型列表
  */
 export const getSupportedResourceTypes = () => {
@@ -584,7 +619,7 @@ export const fetchAllPages = async <T, R>(
     page++;
 
     if (hasNextPage) {
-      await wait(1000);
+      await sleep(1000);
     }
   }
 

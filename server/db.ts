@@ -8,7 +8,7 @@ const { host, port, database, username, password } = mysql;
 // 创建Sequelize实例
 const sequelize = new Sequelize(database, username, password, {
   host,
-  port,
+  port: parseInt(port),
   dialect: 'mysql',
   logging: false,
   dialectOptions: {

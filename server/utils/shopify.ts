@@ -56,19 +56,22 @@ const initShopifyApi = () => {
       : LogSeverity.Debug;
 
     // 初始化 API 并缓存实例
+    // https://github.com/Shopify/shopify-app-js/blob/main/packages/apps/shopify-api/docs/reference/shopifyApi.md
     shopifyApiInstance = shopifyApi({
       apiKey: config.apiKey,
       apiSecretKey: config.apiSecretKey,
       scopes: ['read_translations', 'write_translations'],
       hostName: (config.host || 'localhost').replace(/https?:\/\//, ''),
+      // 指定API版本
       apiVersion: config.version,
+      // 应用是否在 Shopify 后台运行
       isEmbeddedApp: false,
       logger: {
         level: logLevel,
         timestamps: true,
         // 只在开发环境下记录HTTP请求
         httpRequests: process.env.NODE_ENV !== 'production'
-      },
+      }
     });
 
     Logger.info('[Shopify API] 初始化完成');
