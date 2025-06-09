@@ -1,5 +1,5 @@
 import { OpenAI } from 'openai'
-import { fillSystemPrompt, getTranslationResult, getUsedTokens, getHeadersData, assembleUserData, splitTranslationResult, extractAndConvertTime } from '~/server/utils'
+import { fillSystemPrompt, getTranslationResult, getUsedTokens, getHeadersData, assembleUserData, splitTranslationResult, extractAndConvertTime, DELIMITER_TYPE } from '~/server/utils'
 import Logger from '~/server/utils/logger'
 import { ApiKeyUsageLog, Provider } from '~/server/models'
 import TranslationManager from '~/server/utils/translation'
@@ -181,7 +181,12 @@ class TranslationProvider {
         content: userMessage
       }],
       stream: false,
-      temperature: 0
+      temperature: 0,
+      ...(DELIMITER_TYPE === 'json' ? {
+        response_format: {
+          type: 'json_object'
+        }
+      } : {})
     }
 
     try {

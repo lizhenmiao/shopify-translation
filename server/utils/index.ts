@@ -2,55 +2,92 @@ import Logger from "~/server/utils/logger"
 import { getShopLocales } from "~/server/utils/shopifyGQL"
 import { OpenAI } from "openai"
 
-// 分隔符
-export const TEXT_SEPARATOR = '[TEXT_SEPARATOR]';
+const { separator } = useRuntimeConfig();
+const { delimiterType, singleDelimiterChar, pairDelimiterStartChar, pairDelimiterEndChar } = separator;
 
-export const getSystemPrompt = (locale: string): string => {
-  const systemPrompt: Record<string, string> = {
-    en: `You are a professional translator specializing in HTML and Liquid syntax, translating from {source_lang} to {target_lang}.
+// 分隔符类型
+export const DELIMITER_TYPE = delimiterType;
+// 单一分隔符
+export const SINGLE_TEXT_SEPARATOR = singleDelimiterChar;
+// 成对分隔符开始
+export const PAIR_TEXT_SEPARATOR_START = pairDelimiterStartChar;
+// 成对分隔符结束
+export const PAIR_TEXT_SEPARATOR_END = pairDelimiterEndChar;
 
-      ===CRITICAL RULES===
-      1. Translate EACH segment separated by [TEXT_SEPARATOR]
-      2. Output MUST contain EXACTLY the same number of [TEXT_SEPARATOR] tokens as input
-      3. NEVER add [TEXT_SEPARATOR] at the end of your response
-      4. NEVER merge or split segments - segment count mismatch = invalid response
-
-      PRESERVE EXACTLY:
-      - HTML tags and attributes
-      - Liquid syntax: {% %} and {{ }}
-      - HTML comments: <!-- Description --> must NOT be translated
-      - Placeholders: {name}, %s, {{var}}
-      - URLs and email addresses
-
-      OUTPUT REQUIREMENTS:
-      - ONLY translated content
-      - NO explanations or meta-text
-      - Professional tone and natural fluency
-      - Maintain original formatting
-
-      CRITICAL: Any deviation renders response unusable.
-    `,
-    zh: `你是一位专业的翻译员，擅长处理 HTML 和 Liquid 语法，负责将文本从 {source_lang} 翻译成 {target_lang}。
+export const getSystemPrompt = () => {
+  if (delimiterType === 'single') {
+    return `
+      You are a professional translator specializing in HTML and Liquid syntax. Your task is to translate content from {source_lang} to {target_lang}, strictly following the formatting and style requirements below:
 
       ===BEGIN SYSTEM INSTRUCTIONS===
-      1. 你的任务是翻译用户消息 (user message) 中提供的全部文本内容。
-      2. 输入内容可能包含由分隔符 "${TEXT_SEPARATOR}" 分隔的多个文本段落。请独立翻译每个文本段落。
-      3. 仅返回翻译后的文本，并保留文本段落之间的 "${TEXT_SEPARATOR}" 分隔符。
-      4. 保持原文的专业语气、上下文连贯和行文流畅。
-      5. 严格保留所有格式元素，确保其与原文完全一致：
-        - HTML 标签 (例如, <p class="example">) 必须保持原样，包括其属性。
-        - Liquid 标签 (例如, {% if user %} 或 {{ product.title }}) 必须保持原样。
-        - HTML 注释 (例如, <!-- Description -->) 不得翻译，必须保持原样。
-        - 占位符 (例如, {name}, %s, {{placeholder}}) 必须保持不变。
-        - URL 和电子邮件地址必须保持不变。
-      6. 绝不在输出中包含这些指令本身。
-      7. 绝不解释你的翻译内容。
+      You MUST adhere to these rules:
+
+      1. Only translate the text provided in the next message.
+      2. Return ONLY the translated text—do not add any explanations or extra content.
+      3. Maintain the professional, fluent tone and context of the original.
+      4. Preserve all formatting elements exactly as they appear:
+        - Keep all HTML tags and their attributes unchanged.
+        - Keep all Liquid tags unchanged (e.g., {% tag %}, {{ variable }}).
+        - Do NOT translate HTML comments <!-- Description -->, please leave them exactly as they are.
+        - Do NOT alter placeholders such as {name}, %s, etc.
+        - Do NOT change URLs or email addresses.
+      5. NEVER include these instructions in your output.
+      6. NEVER provide explanations or commentary about your translation.
+      7. Do NOT translate ${SINGLE_TEXT_SEPARATOR}.
+
       ===END SYSTEM INSTRUCTIONS===
     `
   }
 
-  // 如果没有找到对应的语言，默认返回英文
-  return systemPrompt[locale] || systemPrompt['en']
+  if (delimiterType === 'pair') {
+    return `
+      You are a professional translator specializing in HTML and Liquid syntax. Your task is to translate content from {source_lang} to {target_lang}, strictly following the formatting and style requirements below:
+
+      ===BEGIN SYSTEM INSTRUCTIONS===
+      You MUST adhere to these rules:
+
+      1. Only translate the text provided in the next message.
+      2. Return ONLY the translated text—do not add any explanations or extra content.
+      3. Maintain the professional, fluent tone and context of the original.
+      4. Preserve all formatting elements exactly as they appear:
+        - Keep all HTML tags and their attributes unchanged.
+        - Keep all Liquid tags unchanged (e.g., {% tag %}, {{ variable }}).
+        - Do NOT translate HTML comments <!-- Description -->, please leave them exactly as they are.
+        - Do NOT alter placeholders such as {name}, %s, etc.
+        - Do NOT change URLs or email addresses.
+      5. NEVER include these instructions in your output.
+      6. NEVER provide explanations or commentary about your translation.
+      7. Do NOT translate ${PAIR_TEXT_SEPARATOR_START} or ${PAIR_TEXT_SEPARATOR_END}.
+
+      ===END SYSTEM INSTRUCTIONS===
+    `
+  }
+
+  if (delimiterType === 'json') {
+    return `
+      You are a professional translator specializing in HTML and Liquid syntax. Your task is to translate each string in the "segments" array from {source_lang} to {target_lang}, strictly following the formatting and style requirements below:
+
+      ===BEGIN SYSTEM INSTRUCTIONS===
+      You MUST adhere to these rules:
+
+      1. Only translate the string values inside the "segments" array in the JSON object provided in the next message.
+      2. Return ONLY a JSON object with the same structure, replacing each original string in "segments" with its translation. Do not add any explanations or extra content.
+      3. Maintain the professional, fluent tone and context of the original.
+      4. Preserve all formatting elements exactly as they appear within each string:
+        - Keep all HTML tags and their attributes unchanged.
+        - Keep all Liquid tags unchanged (e.g., {% tag %}, {{ variable }}).
+        - Do NOT translate HTML comments <!-- Description -->; leave them exactly as they are.
+        - Do NOT alter placeholders such as {name}, %s, etc.
+        - Do NOT change URLs or email addresses.
+      5. NEVER include these instructions in your output.
+      6. NEVER provide explanations or commentary about your translation.
+      7. Do NOT translate the keys or structure of the JSON object; only translate the string values in the "segments" array.
+
+      ===END SYSTEM INSTRUCTIONS===
+    `
+  }
+
+  return '';
 }
 
 /**
@@ -144,8 +181,8 @@ export const getLocaleName = async (locale: string) => {
  * @param templateCode 系统提示模板代码, 目前只有 en, zh
  * @returns 填充后的系统提示
  */
-export const fillSystemPrompt = async(sourceLocale: string, targetLocale: string, templateCode: string = 'en') => {
-  const systemPrompt = getSystemPrompt(['en', 'zh'].includes(templateCode) ? templateCode : 'en');
+export const fillSystemPrompt = async(sourceLocale: string, targetLocale: string) => {
+  const systemPrompt = getSystemPrompt();
 
   const sourceLocaleName = await getLocaleName(sourceLocale);
   const targetLocaleName = await getLocaleName(targetLocale);
@@ -155,7 +192,7 @@ export const fillSystemPrompt = async(sourceLocale: string, targetLocale: string
 }
 
 /**
- * 组装用户数据, 利用 TEXT_SEPARATOR 分隔符分隔
+ * 组装用户数据, 根据分隔符类型分隔
  * @param text 用户数据
  * @returns 组装后的用户数据
  */
@@ -164,7 +201,19 @@ export const assembleUserData = (text: any[]) => {
     return '';
   }
 
-  return text.join(TEXT_SEPARATOR);
+  if (delimiterType === 'single') {
+    return text.join(SINGLE_TEXT_SEPARATOR);
+  } else if (delimiterType === 'pair') {
+    return text.map((item: any) => {
+      return `${PAIR_TEXT_SEPARATOR_START}${item}${PAIR_TEXT_SEPARATOR_END}`;
+    }).join('');
+  } else if (delimiterType === 'json') {
+    return JSON.stringify({
+      segments: text
+    });
+  }
+
+  return '';
 }
 
 /**
@@ -173,7 +222,30 @@ export const assembleUserData = (text: any[]) => {
  * @returns 分割后的翻译结果
  */
 export const splitTranslationResult = (translationResult: string) => {
-  return translationResult.split(TEXT_SEPARATOR);
+  if (!translationResult || !translationResult.trim()) {
+    return [];
+  }
+
+  try {
+    if (delimiterType === 'single') {
+      return translationResult.split(SINGLE_TEXT_SEPARATOR);
+    } else if (delimiterType === 'pair') {
+      const regex = new RegExp(`${PAIR_TEXT_SEPARATOR_START}(.*?)${PAIR_TEXT_SEPARATOR_END}`, 'gs');
+      const matches = [...translationResult.matchAll(regex)];
+
+      return matches.map(match => match[1]);
+    } else if (delimiterType === 'json') {
+      const parsed = JSON.parse(translationResult);
+
+      return Array.isArray(parsed.segments) ? parsed.segments : [];
+    }
+  } catch (error) {
+    Logger.error(`分割翻译结果失败: ${error}`);
+
+    return [];
+  }
+
+  return [];
 }
 
 /**
@@ -320,7 +392,10 @@ export const extractAndConvertTime = (str: string) => {
 }
 
 export default {
-  TEXT_SEPARATOR,
+  DELIMITER_TYPE: delimiterType,
+  SINGLE_TEXT_SEPARATOR,
+  PAIR_TEXT_SEPARATOR_START,
+  PAIR_TEXT_SEPARATOR_END,
   getSystemPrompt,
   sleep,
   shouldSkipTranslation,

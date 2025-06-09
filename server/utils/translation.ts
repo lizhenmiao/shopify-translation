@@ -1,4 +1,4 @@
-import { getCurrentUTCTime, fillSystemPrompt, TEXT_SEPARATOR } from '~/server/utils'
+import { getCurrentUTCTime, fillSystemPrompt, DELIMITER_TYPE, SINGLE_TEXT_SEPARATOR, PAIR_TEXT_SEPARATOR_START, PAIR_TEXT_SEPARATOR_END } from '~/server/utils'
 import { Provider, ApiKeyUsageLog, ResourceItem } from '~/server/models'
 import { Op } from 'sequelize'
 import { countTokens, freeAllTokenEncoders } from '~/server/utils/token-counter'
@@ -22,8 +22,16 @@ class TranslationManager {
 
   // 每个模型和每种语言下的 system prompt 的 tokens 数量
   private systemPromptTokens: Map<string, number> = new Map();
-  // 每个模型下的分割符的 tokens 数量
+
+  // 每个模型下的 单一分割符 的 tokens 数量
   private separatorTokens: Map<string, number> = new Map();
+  // 每个模型下的 成对分割符 开始 的 tokens 数量
+  private separatorStartTokens: Map<string, number> = new Map();
+  // 每个模型下的 成对分割符 结束 的 tokens 数量
+  private separatorEndTokens: Map<string, number> = new Map();
+  // JSON格式包装的额外tokens数量估算
+  private jsonOverheadTokens: Map<string, number> = new Map();
+
   // 当前翻译队列中的语言数组
   private languages: Map<string, number> = new Map();
 
@@ -41,7 +49,12 @@ class TranslationManager {
     this.models = [];
 
     this.systemPromptTokens = new Map();
+
     this.separatorTokens = new Map();
+    this.separatorStartTokens = new Map();
+    this.separatorEndTokens = new Map();
+    this.jsonOverheadTokens = new Map();
+
     this.languages = new Map();
   }
 
@@ -105,11 +118,34 @@ class TranslationManager {
     }
 
     for (const model of this.models) {
-      if (this.separatorTokens.has(model)) {
-        continue
+      if (DELIMITER_TYPE === 'single') {
+        if (!this.separatorTokens.has(model)) {
+          this.separatorTokens.set(model, countTokens(SINGLE_TEXT_SEPARATOR, model));
+        }
+
+        continue;
       }
 
-      this.separatorTokens.set(model, countTokens(TEXT_SEPARATOR, model));
+      if (DELIMITER_TYPE === 'pair') {
+        if (!this.separatorStartTokens.has(model)) {
+          this.separatorStartTokens.set(model, countTokens(PAIR_TEXT_SEPARATOR_START, model));
+        }
+
+        if (!this.separatorEndTokens.has(model)) {
+          this.separatorEndTokens.set(model, countTokens(PAIR_TEXT_SEPARATOR_END, model));
+        }
+
+        continue;
+      }
+
+      if (DELIMITER_TYPE === 'json') {
+        // 计算空的JSON包装的tokens数量
+        const emptyJsonWrapper = JSON.stringify({ segments: [] });
+        const jsonOverhead = countTokens(emptyJsonWrapper, model);
+        this.jsonOverheadTokens.set(model, jsonOverhead);
+
+        continue;
+      }
     }
 
     Logger.info(`已获取 ${this.providers.size} 个翻译提供商, 模型: ${this.models.join(', ')}`);
@@ -241,7 +277,24 @@ class TranslationManager {
       const itemTokens = item[model] || 0;
       const systemPromptKey = this.generateSystemPromptKey(item.sourceLocale, item.targetLocale, model);
       const systemPromptTokens = this.systemPromptTokens.get(systemPromptKey) || 0;
-      const totalItemTokens = itemTokens + systemPromptTokens;
+
+
+      let totalItemTokens = itemTokens + systemPromptTokens;
+
+      if (DELIMITER_TYPE === 'pair') {
+        // 计算包含标签的tokens
+        const separatorStartTokens = this.separatorStartTokens.get(model) || 0;
+        const separatorEndTokens = this.separatorEndTokens.get(model) || 0;
+
+        totalItemTokens += separatorStartTokens + separatorEndTokens;
+      }
+
+      if (DELIMITER_TYPE === 'json') {
+        // 获取JSON包装的额外tokens
+        const jsonOverheadTokens = this.jsonOverheadTokens.get(model) || 0;
+
+        totalItemTokens += jsonOverheadTokens;
+      }
 
       // 找到第一个不超过限制的任务
       if (totalItemTokens <= targetTokens80) {
@@ -277,10 +330,27 @@ class TranslationManager {
     const firstTaskTokens = firstTask[model] || 0;
     const systemPromptKey = this.generateSystemPromptKey(sourceLocale, targetLocale, model);
     const systemPromptTokens = this.systemPromptTokens.get(systemPromptKey) || 0;
-    const separatorTokens = this.separatorTokens.get(model) || 0;
 
-    // 总tokens = 第一个任务tokens + system prompt tokens (分隔符还没有)
-    let totalTokens = firstTaskTokens + systemPromptTokens;
+    let separatorTokens = 0;
+    if (DELIMITER_TYPE === 'single') {
+      separatorTokens = this.separatorTokens.get(model) || 0;
+    } else if (DELIMITER_TYPE === 'pair') {
+      separatorTokens = (this.separatorStartTokens.get(model) || 0) + (this.separatorEndTokens.get(model) || 0);
+    } else if (DELIMITER_TYPE === 'json') {
+      separatorTokens = this.jsonOverheadTokens.get(model) || 0;
+    }
+
+    /**
+     * DELIMITER_TYPE === 'single' 时：
+     * 总tokens = 第一个任务tokens + system prompt tokens
+     * DELIMITER_TYPE === 'pair' 时：
+     * 总tokens = 第一个任务tokens + system prompt tokens + 一对分隔标签的 tokens
+     *
+     * 注意：
+     * 1. 分隔符只有在 tasks.length > 0 时才需要计算
+     * 2. 分隔符在每个任务都需要计算
+     */
+    let totalTokens = firstTaskTokens + systemPromptTokens + (['pair', 'json'].includes(DELIMITER_TYPE) ? separatorTokens : 0);
 
     // 如果单个任务已经在目标区间，直接返回
     if (totalTokens >= targetTokens70) {
@@ -303,8 +373,13 @@ class TranslationManager {
       }
 
       const taskTokens = task[model] || 0;
-      // 注意：这里要考虑分隔符
-      const tokenWithSeparator = taskTokens + (tasks.length > 0 ? separatorTokens : 0);
+      /**
+       * 注意：这里要考虑分隔符
+       * DELIMITER_TYPE === 'single' 时，分隔符只有在 tasks.length > 0 时才需要计算
+       * DELIMITER_TYPE === 'pair' 时，分隔符在每个任务都需要计算
+       * DELIMITER_TYPE === 'json' 时，不需要计算分隔符
+       */
+      const tokenWithSeparator = taskTokens + (DELIMITER_TYPE === 'pair' || (DELIMITER_TYPE === 'single' && tasks.length > 0) ? separatorTokens : 0);
 
       // 检查添加这个任务是否会超过限制
       if (tokenWithSeparator <= remainingTokens) {
@@ -331,10 +406,21 @@ class TranslationManager {
       });
     }
 
-    // 重新计算总tokens，确保准确性
+    // 计算分隔符的总 tokens 数量
+    let totalSeparatorTokens = 0;
     // system prompt 只计算一次，分隔符计算 (tasks.length - 1) 次
-    totalTokens = systemPromptTokens + tasks.reduce((sum, task) => sum + (task[model] || 0), 0)
-                + (tasks.length > 1 ? (tasks.length - 1) * separatorTokens : 0);
+    if (DELIMITER_TYPE === 'single') {
+      totalSeparatorTokens = (tasks.length > 1 ? (tasks.length - 1) * separatorTokens : 0);
+    } else if (DELIMITER_TYPE === 'pair') {
+      // system prompt 只计算一次，每个任务需要一对分隔标签
+      totalSeparatorTokens = tasks.length * separatorTokens;
+    } else if (DELIMITER_TYPE === 'json') {
+      // system prompt只计算一次，JSON包装只计算一次
+      totalSeparatorTokens = separatorTokens;
+    }
+
+    // 重新计算总tokens，确保准确性
+    totalTokens = systemPromptTokens + tasks.reduce((sum, task) => sum + (task[model] || 0), 0) + totalSeparatorTokens;
 
     return { tasks, totalTokens };
   }
